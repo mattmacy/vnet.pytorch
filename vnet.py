@@ -1,25 +1,13 @@
 import torch
-
 import torch.nn as nn
-import torch.optim as optim
-
 import torch.nn.functional as F
-from torch.autograd import Variable
 
-import torchvision.datasets as dset
-import torchvision.transforms as transforms
-from torch.utils.data import DataLoader
-
-import torchvision.models as models
-
-import sys
-import math
 
 class InputTransition(nn.Module):
     def __init__(self, outChannels):
         super(InputTransition, self).__init__()
-        self.conv1 = nn.Conv3D(1, outChannels, kernel_size=5, padding=2)
-        
+        self.conv1 = nn.Conv3d(1, outChannels, kernel_size=5, padding=2)
+
     def forward(self, x):
         # do we want a PRELU here as well?
         out = self.conv1(x)
@@ -29,30 +17,32 @@ class InputTransition(nn.Module):
         out = F.prelu(torch.add(out, x16))
         return out
 
+
 class DownTransition(nn.Module):
     def __init__(self, inChannels, nConvs):
         super(DownTransition, self).__init__()
         outChannels = 2*inChannels
-        self.down_conv = nn.Conv3D(inChannels, OutChannels, kernel_size=2, stride=2)
+        self.down_conv = nn.Conv3d(inChannels, outChannels, kernel_size=2, stride=2)
         self.convs = []
         for _ in range(nConvs):
-            self.convs.append(nn.Conv3D(OutChannels, OutChannels, kernel_size=5, pad=2))
-            
+            self.convs.append(nn.Conv3d(outChannels, outChannels, kernel_size=5, padding=2))
+
     def forward(self, x):
         out = F.prelu(self.down_conv(x))
         for conv in self.convs:
             out = F.prelu(conv(out))
         out = F.prelu(torch.add(out, x))
         return out
-        
+
+
 class UpTransition(nn.Module):
     def __init__(self, inChans, outChans, nConvs):
         super(UpTransition, self).__init__()
         self.up_conv = nn.ConvTranspose3d(inChans, outChans // 2, kernel_size=2, stride=2)
         self.convs = []
         for _ in range(nConvs):
-            self.convs.append(nn.Conv3D(outChans, outChans, kernel_size=5, pad=2))
-        
+            self.convs.append(nn.Conv3d(outChans, outChans, kernel_size=5, padding=2))
+
     def forward(self, x, skipx):
         out = F.prelu(self.up_conv(x))
         out = xcat = torch.cat((out, skipx), 1)
@@ -60,27 +50,28 @@ class UpTransition(nn.Module):
             out = F.prelu(conv(out))
         out = F.prelu(torch.add(out, xcat))
         return out
-        
+
+
 class OutputTransition(nn.Module):
     def __init__(self, inChannels):
         super(OutputTransition, self).__init__()
-        self.conv1 = nn.Conv3D(inChannels, 2, kernel_size=5, pad=2)
-        self.conv2 = nn.Conv3D(2, 2, kernel_size=1)
-        
+        self.conv1 = nn.Conv3d(inChannels, 2, kernel_size=5, padding=2)
+        self.conv2 = nn.Conv3d(2, 2, kernel_size=1)
+
     def forward(self, x):
         # convolve 32 down to 2 channels
         out = F.prelu(self.conv1(x))
         # do softmax of 1x1 convolution
         out = F.softmax(self.conv2(out))
         return out
-        
+
 
 class VNet(nn.Module):
     # the number of convolutions in each layer corresponds
     # to what is in the actual prototxt, not the intent
     def __init__(self):
         super(VNet, self).__init__()
-        self.in_tr =  InputTransition(16)
+        self.in_tr = InputTransition(16)
         self.down_tr32 = DownTransition(16, 1)
         self.down_tr64 = DownTransition(32, 2)
         self.down_tr128 = DownTransition(64, 3)
