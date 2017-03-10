@@ -51,22 +51,28 @@ def main():
         shutil.rmtree(args.save)
     os.makedirs(args.save, exist_ok=True)
 
-    trainTransform = transforms.Compose([
-        transforms.ToTensor(),
-    ])
-    testTransform = transforms.Compose([
-        transforms.ToTensor(),
-    ])
+    # trainTransform = transforms.Compose([
+    #     transforms.ToTensor(),
+    # ])
+    # testTransform = transforms.Compose([
+    #     transforms.ToTensor(),
+    # ])
 
+    trainTransform = None
+    testTransform = None
     kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
+    print("loading training set")
     trainLoader = DataLoader(
-        dset.LUNA16(root='luna16', train=True,
-                     transform=trainTransform),
+        dset.LUNA16(root='luna16', images="luna16_ct_normalized", targets="luna16_nodule_masks",
+                    train=True, transform=trainTransform),
         batch_size=args.batchSz, shuffle=True, **kwargs)
+    print("loading test set")
     testLoader = DataLoader(
-        dset.LUNA16(root='luna16', train=False,
-                     transform=testTransform),
+        dset.LUNA16(root='luna16', images="luna16_ct_normalized", targets="luna16_nodule_masks",
+                    train=False, transform=testTransform),
         batch_size=args.batchSz, shuffle=False, **kwargs)
+
+    print("build vnet")
 
     net = vnet.VNet()
 
