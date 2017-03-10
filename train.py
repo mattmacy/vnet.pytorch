@@ -106,7 +106,7 @@ def train(args, epoch, net, trainLoader, optimizer, trainF):
         data, target = Variable(data), Variable(target)
         optimizer.zero_grad()
         output = net(data)
-        loss = F.dice_loss(output, target)
+        loss = bioloss.dice_loss(output, target)
         # make_graph.save('/tmp/t.dot', loss.creator); assert(False)
         loss.backward()
         optimizer.step()
@@ -131,7 +131,7 @@ def test(args, epoch, net, testLoader, optimizer, testF):
             data, target = data.cuda(), target.cuda()
         data, target = Variable(data, volatile=True), Variable(target)
         output = net(data)
-        test_loss += F.dice_loss(output, target).data[0]
+        test_loss += bioloss.dice_loss(output, target).data[0]
         pred = output.data.max(1)[1] # get the index of the max log-probability
         incorrect += pred.ne(target.data).cpu().sum()
 
