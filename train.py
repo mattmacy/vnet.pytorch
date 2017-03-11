@@ -30,7 +30,7 @@ import make_graph
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batchSz', type=int, default=16)
+    parser.add_argument('--batchSz', type=int, default=1)
     parser.add_argument('--nEpochs', type=int, default=300)
     parser.add_argument('--no-cuda', action='store_true')
     parser.add_argument('--save')
@@ -46,6 +46,15 @@ def main():
     torch.manual_seed(args.seed)
     if args.cuda:
         torch.cuda.manual_seed(args.seed)
+
+    print("build vnet")
+    net = vnet.VNet(args.batchSz, True)
+
+    print('  + Number of params: {}'.format(
+        sum([p.data.nelement() for p in net.parameters()])))
+    if args.cuda:
+        print("moving network to GPU")
+        net = net.cuda()
 
     if os.path.exists(args.save):
         shutil.rmtree(args.save)
@@ -71,15 +80,6 @@ def main():
         dset.LUNA16(root='luna16', images="luna16_ct_normalized", targets="luna16_nodule_masks",
                     train=False, transform=testTransform),
         batch_size=args.batchSz, shuffle=False, **kwargs)
-
-    print("build vnet")
-
-    net = vnet.VNet()
-
-    print('  + Number of params: {}'.format(
-        sum([p.data.nelement() for p in net.parameters()])))
-    if args.cuda:
-        net = net.cuda()
 
     if args.opt == 'sgd':
         optimizer = optim.SGD(net.parameters(), lr=1e-1,
