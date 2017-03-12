@@ -7,7 +7,10 @@ import torch.nn.functional as F
 class PReLUConv(nn.Module):
     def __init__(self, nchan, inplace):
         super(PReLUConv, self).__init__()
-        self.prelu = nn.ReLU(inplace=inplace)
+        if inplace:
+            self.prelu = nn.ReLU(inplace=inplace)
+        else:
+            self.prelu = nn.PReLU()
         self.conv = nn.Conv3d(nchan, nchan, kernel_size=5, padding=2)
 
     def forward(self, x):
@@ -25,7 +28,10 @@ class InputTransition(nn.Module):
     def __init__(self, outChans, inplace):
         super(InputTransition, self).__init__()
         self.conv1 = nn.Conv3d(1, 16, kernel_size=5, padding=2)
-        self.relu1 = nn.ReLU(inplace=inplace)
+        if inplace:
+            self.relu1 = nn.ReLU(inplace=inplace)
+        else:
+            self.relu1 = nn.PReLU()
 
     def forward(self, x):
         # do we want a PRELU here as well?
@@ -42,8 +48,12 @@ class DownTransition(nn.Module):
         super(DownTransition, self).__init__()
         outChans = 2*inChans
         self.down_conv = nn.Conv3d(inChans, outChans, kernel_size=2, stride=2)
-        self.relu1 = nn.ReLU(inplace=inplace)
-        self.relu2 = nn.ReLU(inplace=inplace)
+        if inplace:
+            self.relu1 = nn.ReLU(inplace=inplace)
+            self.relu2 = nn.ReLU(inplace=inplace)
+        else:
+            self.relu1 = nn.PReLU()
+            self.relu2 = nn.PReLU()
         self.ops = _make_nConv(outChans, nConvs, inplace)
 
     def forward(self, x):
@@ -57,8 +67,12 @@ class UpTransition(nn.Module):
     def __init__(self, inChans, outChans, nConvs, inplace):
         super(UpTransition, self).__init__()
         self.up_conv = nn.ConvTranspose3d(inChans, outChans // 2, kernel_size=2, stride=2)
-        self.relu1 = nn.ReLU(inplace=inplace)
-        self.relu2 = nn.ReLU(inplace=inplace)
+        if inplace:
+            self.relu1 = nn.ReLU(inplace=inplace)
+            self.relu2 = nn.ReLU(inplace=inplace)
+        else:
+            self.relu1 = nn.PReLU()
+            self.relu2 = nn.PReLU()
         self.ops = _make_nConv(outChans, nConvs, inplace)
 
     def forward(self, x, skipx):
@@ -74,20 +88,25 @@ class OutputTransition(nn.Module):
         super(OutputTransition, self).__init__()
         self.conv1 = nn.Conv3d(inChans, 2, kernel_size=5, padding=2)
         self.conv2 = nn.Conv3d(2, 2, kernel_size=1)
-        self.relu1 = nn.ReLU(inplace=inplace)
+        if inplace:
+            self.relu1 = nn.ReLU(inplace=inplace)
+        else:
+            self.relu1 = nn.PReLU()
 
     def forward(self, x):
         # convolve 32 down to 2 channels
         out = self.relu1(self.conv1(x))
         out = self.conv2(out)
-        # chan0 = torch.cat((out[0][0], out[1][0]), 0)
-        # chan0 = chan0.view(chan0.numel()).unsqueeze(0)
-        # chan1 = torch.cat((out[1][0], out[1][1]), 0)
-        # chan1 = chan1.view(chan1.numel()).unsqueeze(0)
-        # print(chan1.size())
-        # out = torch.cat((chan0, chan1), 0)
-        print(out.size())
-        out = F.softmax(out.squeeze())
+        # make channels the first axis
+        out = out.permute(1, 0, 2, 3, 4)
+        # flatten to cope with limited number
+        # of dimensions softmax will take
+        out = out.view(2, out.numel() // 2)
+        # make channels last so that softmax DTRT
+        out = out.permute(1, 0)
+        # put channels first
+        out = F.softmax(out).permute(1, 0)
+        # treat channel 0 as the predicted output
         return out
 
 
