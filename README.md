@@ -19,5 +19,5 @@ copied from [Adam Paszke's gist](https://gist.github.com/apaszke/01aae7a0494c55a
 
 ### Credits
 
-The train.py script was derived from the in the [densenet.pytorch](https://github.com/bamos/densenet.pytorch)
+The train.py script was derived from the one in the [densenet.pytorch](https://github.com/bamos/densenet.pytorch)
 repo.
