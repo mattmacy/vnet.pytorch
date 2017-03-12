@@ -28,6 +28,10 @@ import setproctitle
 import vnet
 import make_graph
 
+nodule_masks="luna16_nodule_masks"
+lung_masks="luna16_seg_lungs"
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--batchSz', type=int, default=1)
@@ -48,7 +52,7 @@ def main():
         torch.cuda.manual_seed(args.seed)
 
     print("build vnet")
-    net = vnet.VNet(args.batchSz, True)
+    net = vnet.VNet(args.batchSz, inplace=False)
 
     print('  + Number of params: {}'.format(
         sum([p.data.nelement() for p in net.parameters()])))
@@ -72,12 +76,12 @@ def main():
     kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
     print("loading training set")
     trainLoader = DataLoader(
-        dset.LUNA16(root='luna16', images="luna16_ct_normalized", targets="luna16_nodule_masks",
+        dset.LUNA16(root='luna16', images="luna16_ct_normalized", targets=lung_masks,
                     train=True, transform=trainTransform),
         batch_size=args.batchSz, shuffle=True, **kwargs)
     print("loading test set")
     testLoader = DataLoader(
-        dset.LUNA16(root='luna16', images="luna16_ct_normalized", targets="luna16_nodule_masks",
+        dset.LUNA16(root='luna16', images="luna16_ct_normalized", targets=lung_masks,
                     train=False, transform=testTransform),
         batch_size=args.batchSz, shuffle=False, **kwargs)
 
@@ -117,11 +121,9 @@ def train(args, epoch, net, trainLoader, optimizer, trainF):
         loss.backward()
         optimizer.step()
         nProcessed += len(data)
-        pred = output.data.max(1)[1] # get the index of the max log-probability
-        incorrect = pred.ne(target.data).cpu().sum()
-        err = 100.*incorrect/len(data)
+        err = 100.*(1. - loss.data[0])
         partialEpoch = epoch + batch_idx / len(trainLoader) - 1
-        print('Train Epoch: {:.2f} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tError: {:.6f}'.format(
+        print('Train Epoch: {:.2f} [{}/{} ({:.0f}%)]\tLoss: {:.8f}\tError: {:.8f}'.format(
             partialEpoch, nProcessed, nTrain, 100. * batch_idx / len(trainLoader),
             loss.data[0], err))
 
@@ -137,11 +139,10 @@ def test(args, epoch, net, testLoader, optimizer, testF):
             data, target = data.cuda(), target.cuda()
         data, target = Variable(data, volatile=True), Variable(target)
         output = net(data)
-        test_loss += bioloss.dice_loss(output, target).data[0]
-        pred = output.data.max(1)[1] # get the index of the max log-probability
-        incorrect += pred.ne(target.data).cpu().sum()
+        loss = bioloss.dice_loss(output, target).data[0]
+        test_loss += loss
+        incorrect += (1. - loss)
 
-    test_loss = test_loss
     test_loss /= len(testLoader) # loss function already averages over batch size
     nTotal = len(testLoader.dataset)
     err = 100.*incorrect/nTotal
