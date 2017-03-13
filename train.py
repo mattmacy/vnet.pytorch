@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 
+from local import *
 import argparse
 import torch
 
 import torch.nn as nn
+import torch.nn.init as init
 import torch.optim as optim
 
 import torch.nn.functional as F
@@ -28,13 +30,14 @@ import setproctitle
 import vnet
 import make_graph
 
+
 nodule_masks="luna16_nodule_masks"
 lung_masks="luna16_seg_lungs"
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batchSz', type=int, default=1)
+    parser.add_argument('--batchSz', type=int, default=2)
     parser.add_argument('--nEpochs', type=int, default=300)
     parser.add_argument('--no-cuda', action='store_true')
     parser.add_argument('--save')
@@ -52,7 +55,8 @@ def main():
         torch.cuda.manual_seed(args.seed)
 
     print("build vnet")
-    net = vnet.VNet(args.batchSz, inplace=False)
+    net = vnet.VNet(args.batchSz, inplace=True)
+    #net.apply(init.xavier_uniform)
 
     print('  + Number of params: {}'.format(
         sum([p.data.nelement() for p in net.parameters()])))
@@ -64,20 +68,24 @@ def main():
         shutil.rmtree(args.save)
     os.makedirs(args.save, exist_ok=True)
 
-    # trainTransform = transforms.Compose([
-    #     transforms.ToTensor(),
-    # ])
-    # testTransform = transforms.Compose([
-    #     transforms.ToTensor(),
-    # ])
+    normMu = [-642.823]
+    normSigma = [459.468]
+    normTransform = transforms.Normalize(normMu, normSigma)
 
-    trainTransform = None
-    testTransform = None
+    trainTransform = transforms.Compose([
+        transforms.ToTensor(),
+        normTransform
+    ])
+    testTransform = transforms.Compose([
+        transforms.ToTensor(),
+        normTransform
+    ])
+
     kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
     print("loading training set")
     trainLoader = DataLoader(
         dset.LUNA16(root='luna16', images="luna16_ct_normalized", targets=lung_masks,
-                    train=True, transform=trainTransform),
+                    train=True, transform=trainTransform, allow_empty=False),
         batch_size=args.batchSz, shuffle=True, **kwargs)
     print("loading test set")
     testLoader = DataLoader(
