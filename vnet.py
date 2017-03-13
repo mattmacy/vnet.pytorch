@@ -105,7 +105,7 @@ class OutputTransition(nn.Module):
         # make channels last so that softmax DTRT
         out = out.permute(1, 0)
         # put channels first
-        out = F.softmax(out).permute(1, 0)
+        out = F.softmax(out)
         # treat channel 0 as the predicted output
         return out
 
