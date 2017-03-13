@@ -88,6 +88,7 @@ class OutputTransition(nn.Module):
         super(OutputTransition, self).__init__()
         self.conv1 = nn.Conv3d(inChans, 2, kernel_size=5, padding=2)
         self.conv2 = nn.Conv3d(2, 2, kernel_size=1)
+        self.batchSize = batchSize
         if inplace:
             self.relu1 = nn.ReLU(inplace=inplace)
         else:
@@ -98,12 +99,11 @@ class OutputTransition(nn.Module):
         out = self.relu1(self.conv1(x))
         out = self.conv2(out)
         # make channels the first axis
-        out = out.permute(1, 0, 2, 3, 4)
+        out = out.permute(1, 0, 2, 3, 4).contiguous()
+        out = out.view(2, out.numel() // 2)
         # flatten to cope with limited number
         # of dimensions softmax will take
-        out = out.view(2, out.numel() // 2)
         # make channels last so that softmax DTRT
-        out = out.permute(1, 0)
         # put channels first
         out = F.softmax(out)
         # treat channel 0 as the predicted output
