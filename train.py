@@ -160,10 +160,10 @@ def test(args, epoch, net, testLoader, optimizer, testF):
         test_loss += loss
         incorrect += (1. - loss)
 
-    test_loss /= len(testLoader)  # loss function already averages over batch size
-    nTotal = len(testLoader.dataset)
+    test_loss /= len(testLoader) # loss function already averages over batch size
+    nTotal = len(testLoader)
     err = 100.*incorrect/nTotal
-    print('\nTest set: Average loss: {:.4f}, Error: {}/{} ({:.0f}%)\n'.format(
+    print('\nTest set: Average Dice Coeff: {:.4f}, Error: {}/{} ({:.0f}%)\n'.format(
         test_loss, incorrect, nTotal, err))
 
     testF.write('{},{},{}\n'.format(epoch, test_loss, err))
