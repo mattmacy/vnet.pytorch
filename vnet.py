@@ -3,10 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-
-class PReLUConv(nn.Module):
+class LUConv(nn.Module):
     def __init__(self, nchan, inplace):
-        super(PReLUConv, self).__init__()
+        super(LUConv, self).__init__()
         if inplace:
             self.prelu = nn.ReLU(inplace=inplace)
         else:
@@ -17,10 +16,11 @@ class PReLUConv(nn.Module):
         out = self.prelu(self.conv(x))
         return out
 
+
 def _make_nConv(nchan, depth, inplace):
     layers = []
     for _ in range(depth):
-        layers.append(PReLUConv(nchan, inplace))
+        layers.append(LUConv(nchan, inplace))
     return nn.Sequential(*layers)
 
 
@@ -98,13 +98,11 @@ class OutputTransition(nn.Module):
         # convolve 32 down to 2 channels
         out = self.relu1(self.conv1(x))
         out = self.conv2(out)
-        # make channels the first axis
-        out = out.permute(1, 0, 2, 3, 4).contiguous()
-        out = out.view(2, out.numel() // 2)
-        # flatten to cope with limited number
-        # of dimensions softmax will take
-        # make channels last so that softmax DTRT
-        # put channels first
+
+        # make channels the last axis
+        out = out.permute(0, 2, 3, 4, 1).contiguous()
+        # flatten
+        out = out.view(out.numel() // 2, 2)
         out = F.softmax(out)
         # treat channel 0 as the predicted output
         return out
