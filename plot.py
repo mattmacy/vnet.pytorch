@@ -33,7 +33,7 @@ def main():
     plt.plot(trainI_, trainLoss_, label='Train')
     plt.plot(testI, testLoss, label='Test')
     plt.xlabel('Epoch')
-    plt.ylabel('Cross-Entropy Loss')
+    plt.ylabel('Dice Coefficient')
     plt.legend()
     ax.set_yscale('log')
     loss_fname = os.path.join(args.expDir, 'loss.png')
