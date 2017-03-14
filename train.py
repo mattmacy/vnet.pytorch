@@ -30,9 +30,16 @@ import setproctitle
 import vnet
 import make_graph
 
+nodule_masks = "luna16_nodule_masks"
+lung_masks = "luna16_seg_lungs"
 
-nodule_masks="luna16_nodule_masks"
-lung_masks="luna16_seg_lungs"
+
+def weights_init(m):
+    classname = m.__class__.__name__
+    if classname.find('Conv3d') != -1:
+        nn.init.kaiming_normal(m.weight)
+    elif classname.find('PReLU') != -1:
+        nn.init.normal(m.weight)
 
 
 def main():
@@ -56,7 +63,7 @@ def main():
 
     print("build vnet")
     net = vnet.VNet(args.batchSz, inplace=True)
-    #net.apply(init.xavier_uniform)
+    net.apply(weights_init)
 
     print('  + Number of params: {}'.format(
         sum([p.data.nelement() for p in net.parameters()])))
@@ -68,8 +75,8 @@ def main():
         shutil.rmtree(args.save)
     os.makedirs(args.save, exist_ok=True)
 
-    normMu = [-642.823]
-    normSigma = [459.468]
+    normMu = [-642.794]
+    normSigma = [459.512]
     normTransform = transforms.Normalize(normMu, normSigma)
 
     trainTransform = transforms.Compose([
@@ -94,8 +101,8 @@ def main():
         batch_size=args.batchSz, shuffle=False, **kwargs)
 
     if args.opt == 'sgd':
-        optimizer = optim.SGD(net.parameters(), lr=1e-1,
-                            momentum=0.9, weight_decay=1e-4)
+        optimizer = optim.SGD(net.parameters(), lr=1e0,
+                              momentum=0.9, weight_decay=1e-4)
     elif args.opt == 'adam':
         optimizer = optim.Adam(net.parameters(), weight_decay=1e-4)
     elif args.opt == 'rmsprop':
@@ -113,6 +120,7 @@ def main():
 
     trainF.close()
     testF.close()
+
 
 def train(args, epoch, net, trainLoader, optimizer, trainF):
     net.train()
@@ -138,6 +146,7 @@ def train(args, epoch, net, trainLoader, optimizer, trainF):
         trainF.write('{},{},{}\n'.format(partialEpoch, loss.data[0], err))
         trainF.flush()
 
+
 def test(args, epoch, net, testLoader, optimizer, testF):
     net.eval()
     test_loss = 0
@@ -151,7 +160,7 @@ def test(args, epoch, net, testLoader, optimizer, testF):
         test_loss += loss
         incorrect += (1. - loss)
 
-    test_loss /= len(testLoader) # loss function already averages over batch size
+    test_loss /= len(testLoader)  # loss function already averages over batch size
     nTotal = len(testLoader.dataset)
     err = 100.*incorrect/nTotal
     print('\nTest set: Average loss: {:.4f}, Error: {}/{} ({:.0f}%)\n'.format(
@@ -160,15 +169,22 @@ def test(args, epoch, net, testLoader, optimizer, testF):
     testF.write('{},{},{}\n'.format(epoch, test_loss, err))
     testF.flush()
 
+
 def adjust_opt(optAlg, optimizer, epoch):
     if optAlg == 'sgd':
-        if epoch < 150: lr = 1e-1
-        elif epoch == 150: lr = 1e-2
-        elif epoch == 225: lr = 1e-3
-        else: return
+        if epoch < 2:
+            lr = 1e0
+        if epoch < 150:
+            lr = 1e-1
+        elif epoch == 150:
+            lr = 1e-2
+        elif epoch == 225:
+            lr = 1e-3
+        else:
+            return
 
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
 
-if __name__=='__main__':
+if __name__ == '__main__':
     main()
