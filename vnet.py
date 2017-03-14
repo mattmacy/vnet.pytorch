@@ -84,7 +84,7 @@ class UpTransition(nn.Module):
 
 
 class OutputTransition(nn.Module):
-    def __init__(self, inChans, batchSize, inplace):
+    def __init__(self, inChans, batchSize, inplace, nll):
         super(OutputTransition, self).__init__()
         self.conv1 = nn.Conv3d(inChans, 2, kernel_size=5, padding=2)
         self.conv2 = nn.Conv3d(2, 2, kernel_size=1)
@@ -93,6 +93,11 @@ class OutputTransition(nn.Module):
             self.relu1 = nn.ReLU(inplace=inplace)
         else:
             self.relu1 = nn.PReLU()
+        if nll:
+            self.softmax = F.log_softmax
+        else:
+            self.softmax = F.softmax
+
 
     def forward(self, x):
         # convolve 32 down to 2 channels
@@ -103,7 +108,7 @@ class OutputTransition(nn.Module):
         out = out.permute(0, 2, 3, 4, 1).contiguous()
         # flatten
         out = out.view(out.numel() // 2, 2)
-        out = F.softmax(out)
+        out = self.softmax(out)
         # treat channel 0 as the predicted output
         return out
 
@@ -111,7 +116,7 @@ class OutputTransition(nn.Module):
 class VNet(nn.Module):
     # the number of convolutions in each layer corresponds
     # to what is in the actual prototxt, not the intent
-    def __init__(self, batchSize, inplace=True):
+    def __init__(self, batchSize, inplace=True, nll=False):
         super(VNet, self).__init__()
         self.in_tr = InputTransition(16, inplace)
         self.down_tr32 = DownTransition(16, 1, inplace)
@@ -122,7 +127,8 @@ class VNet(nn.Module):
         self.up_tr128 = UpTransition(256, 128, 2, inplace)
         self.up_tr64 = UpTransition(128, 64, 1, inplace)
         self.up_tr32 = UpTransition(64, 32, 1, inplace)
-        self.out_tr = OutputTransition(32, batchSize, inplace)
+        self.out_tr = OutputTransition(32, batchSize, inplace, nll)
+
 
     # The network topology as described in the diagram
     # in the VNet paper
