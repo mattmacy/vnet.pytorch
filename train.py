@@ -101,7 +101,7 @@ def main():
         batch_size=args.batchSz, shuffle=False, **kwargs)
 
     if args.opt == 'sgd':
-        optimizer = optim.SGD(net.parameters(), lr=1e0,
+        optimizer = optim.SGD(net.parameters(), lr=1e-1,
                               momentum=0.9, weight_decay=1e-4)
     elif args.opt == 'adam':
         optimizer = optim.Adam(net.parameters(), weight_decay=1e-4)
@@ -172,8 +172,6 @@ def test(args, epoch, net, testLoader, optimizer, testF):
 
 def adjust_opt(optAlg, optimizer, epoch):
     if optAlg == 'sgd':
-        if epoch < 2:
-            lr = 1e0
         if epoch < 150:
             lr = 1e-1
         elif epoch == 150:
