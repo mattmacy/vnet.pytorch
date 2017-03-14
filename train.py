@@ -179,7 +179,7 @@ def test_nll(args, epoch, net, testLoader, optimizer, testF):
     test_loss /= len(testLoader)  # loss function already averages over batch size
     err = 100.*incorrect/numel
     print('\nTest set: Average loss: {:.4f}, Error: {}/{} ({:.0f}%)\n'.format(
-        test_loss, incorrect, nTotal, err))
+        test_loss, incorrect, numel, err))
 
     testF.write('{},{},{}\n'.format(epoch, test_loss, err))
     testF.flush()
