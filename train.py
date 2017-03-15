@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 from local import *
+import time
 import argparse
 import torch
 
@@ -38,14 +39,16 @@ def weights_init(m):
     classname = m.__class__.__name__
     if classname.find('Conv3d') != -1:
         nn.init.kaiming_normal(m.weight)
-    elif classname.find('PReLU') != -1:
-        nn.init.normal(m.weight)
 
+def datestr():
+    now = time.gmtime()
+    return '{}{:02}{:02}_{:02}{:02}'.format(now.tm_year, now.tm_mon, now.tm_mday, now.tm_hour, now.tm_min)
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batchSz', type=int, default=2)
+    parser.add_argument('--batchSz', type=int, default=12)
     parser.add_argument('--nll', type=bool, default=True)
+    parser.add_argument('--PReLU', type=bool, default=True)
     parser.add_argument('--nEpochs', type=int, default=300)
     parser.add_argument('--no-cuda', action='store_true')
     parser.add_argument('--save')
@@ -55,7 +58,7 @@ def main():
     args = parser.parse_args()
 
     args.cuda = not args.no_cuda and torch.cuda.is_available()
-    args.save = args.save or 'work/vnet.base'
+    args.save = args.save or 'work/vnet.base.{}'.format(datestr())
     nll = args.nll
     setproctitle.setproctitle(args.save)
 
@@ -64,20 +67,26 @@ def main():
         torch.cuda.manual_seed(args.seed)
 
     print("build vnet")
-    net = vnet.VNet(args.batchSz, inplace=True, nll=nll)
+    net = vnet.VNet(args.batchSz, inplace=False, nll=nll)
     net.apply(weights_init)
+
+    if args.PReLU:
+        weight_decay = 1e-3
+    else:
+        weight_decay = 1e-4
 
     if nll:
         train = train_nll
         test = test_nll
+        class_balance = True
     else:
         train = train_dice
         test = test_dice
+        class_balance = False
 
     print('  + Number of params: {}'.format(
         sum([p.data.nelement() for p in net.parameters()])))
     if args.cuda:
-        print("moving network to GPU")
         net = net.cuda()
 
     if os.path.exists(args.save):
@@ -99,31 +108,39 @@ def main():
 
     kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
     print("loading training set")
-    trainLoader = DataLoader(
-        dset.LUNA16(root='luna16', images="luna16_ct_normalized", targets=lung_masks,
-                    train=True, transform=trainTransform, allow_empty=False),
-        batch_size=args.batchSz, shuffle=True, **kwargs)
+    trainSet = dset.LUNA16(root='luna16', images="luna16_ct_normalized", targets=lung_masks,
+                           train=True, transform=trainTransform, allow_empty=False,
+                           class_balance=class_balance, split=[2,2,2], seed=args.seed)
+    trainLoader = DataLoader(trainSet, batch_size=args.batchSz, shuffle=True, **kwargs)
     print("loading test set")
     testLoader = DataLoader(
         dset.LUNA16(root='luna16', images="luna16_ct_normalized", targets=lung_masks,
-                    train=False, transform=testTransform),
+                    train=False, transform=testTransform, allow_empty=False, seed=args.seed,
+                    split=[2, 2, 2]),
         batch_size=args.batchSz, shuffle=False, **kwargs)
+
+    target_weight = trainSet.target_weight()
+    print(target_weight)
+    bg_weight = 1.0 - target_weight
+    class_weights = torch.FloatTensor([bg_weight, target_weight])
+    if args.cuda:
+        class_weights = class_weights.cuda()
 
     if args.opt == 'sgd':
         optimizer = optim.SGD(net.parameters(), lr=1e-1,
-                              momentum=0.9, weight_decay=1e-4)
+                              momentum=0.99, weight_decay=weight_decay)
     elif args.opt == 'adam':
-        optimizer = optim.Adam(net.parameters(), weight_decay=1e-4)
+        optimizer = optim.Adam(net.parameters(),  weight_decay=weight_decay)
     elif args.opt == 'rmsprop':
-        optimizer = optim.RMSprop(net.parameters(), weight_decay=1e-4)
+        optimizer = optim.RMSprop(net.parameters(), weight_decay=weight_decay)
 
     trainF = open(os.path.join(args.save, 'train.csv'), 'w')
     testF = open(os.path.join(args.save, 'test.csv'), 'w')
 
     for epoch in range(1, args.nEpochs + 1):
         adjust_opt(args.opt, optimizer, epoch)
-        train(args, epoch, net, trainLoader, optimizer, trainF)
-        test(args, epoch, net, testLoader, optimizer, testF)
+        train(args, epoch, net, trainLoader, optimizer, trainF, class_weights)
+        test(args, epoch, net, testLoader, optimizer, testF, class_weights)
         torch.save(net, os.path.join(args.save, 'latest.pth'))
         os.system('./plot.py {} &'.format(args.save))
 
@@ -131,7 +148,7 @@ def main():
     testF.close()
 
 
-def train_nll(args, epoch, net, trainLoader, optimizer, trainF):
+def train_nll(args, epoch, net, trainLoader, optimizer, trainF, weights):
     net.train()
     nProcessed = 0
     nTrain = len(trainLoader.dataset)
@@ -142,7 +159,7 @@ def train_nll(args, epoch, net, trainLoader, optimizer, trainF):
         optimizer.zero_grad()
         output = net(data)
         target = target.view(target.numel())
-        loss = F.nll_loss(output, target)
+        loss = F.nll_loss(output, target, weight=weights)
         # make_graph.save('/tmp/t.dot', loss.creator); assert(False)
         loss.backward()
         optimizer.step()
@@ -159,7 +176,7 @@ def train_nll(args, epoch, net, trainLoader, optimizer, trainF):
         trainF.flush()
 
 
-def test_nll(args, epoch, net, testLoader, optimizer, testF):
+def test_nll(args, epoch, net, testLoader, optimizer, testF, weights):
     net.eval()
     test_loss = 0
     incorrect = 0
@@ -171,11 +188,10 @@ def test_nll(args, epoch, net, testLoader, optimizer, testF):
         target = target.view(target.numel())
         numel += target.numel()
         output = net(data)
-        test_loss += F.nll_loss(output, target).data[0]
+        test_loss += F.nll_loss(output, target, weight=weights).data[0]
         pred = output.data.max(1)[1]  # get the index of the max log-probability
         incorrect += pred.ne(target.data).cpu().sum()
 
-    test_loss = test_loss
     test_loss /= len(testLoader)  # loss function already averages over batch size
     err = 100.*incorrect/numel
     print('\nTest set: Average loss: {:.4f}, Error: {}/{} ({:.0f}%)\n'.format(
@@ -185,7 +201,7 @@ def test_nll(args, epoch, net, testLoader, optimizer, testF):
     testF.flush()
 
 
-def train_dice(args, epoch, net, trainLoader, optimizer, trainF):
+def train_dice(args, epoch, net, trainLoader, optimizer, trainF, weights):
     net.train()
     nProcessed = 0
     nTrain = len(trainLoader.dataset)
@@ -210,7 +226,7 @@ def train_dice(args, epoch, net, trainLoader, optimizer, trainF):
         trainF.flush()
 
 
-def test_dice(args, epoch, net, testLoader, optimizer, testF):
+def test_dice(args, epoch, net, testLoader, optimizer, testF, weights):
     net.eval()
     test_loss = 0
     incorrect = 0
