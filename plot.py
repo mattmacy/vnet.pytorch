@@ -19,7 +19,7 @@ def main():
     testP = os.path.join(args.expDir, 'test.csv')
     testData = np.loadtxt(testP, delimiter=',').reshape(-1, 3)
 
-    N = 392*2 # Rolling loss over the past epoch.
+    N = 475  # number of minibatches + 1
 
     trainI, trainLoss, trainErr = np.split(trainData, [1,2], axis=1)
     trainI, trainLoss, trainErr = [x.ravel() for x in
@@ -33,7 +33,7 @@ def main():
     plt.plot(trainI_, trainLoss_, label='Train')
     plt.plot(testI, testLoss, label='Test')
     plt.xlabel('Epoch')
-    plt.ylabel('Dice Coefficient')
+    plt.ylabel('Cross-Entropy Loss')
     plt.legend()
     ax.set_yscale('log')
     loss_fname = os.path.join(args.expDir, 'loss.png')
