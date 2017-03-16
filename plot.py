@@ -19,7 +19,7 @@ def main():
     testP = os.path.join(args.expDir, 'test.csv')
     testData = np.loadtxt(testP, delimiter=',').reshape(-1, 3)
 
-    N = 475  # number of minibatches + 1
+    N = 203  # number of minibatches 
 
     trainI, trainLoss, trainErr = np.split(trainData, [1,2], axis=1)
     trainI, trainLoss, trainErr = [x.ravel() for x in
