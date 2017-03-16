@@ -39,6 +39,15 @@ def weights_init(m):
     classname = m.__class__.__name__
     if classname.find('Conv3d') != -1:
         nn.init.kaiming_normal(m.weight)
+    elif classname.find('BatchNorm') != -1:
+        #nn.init.kaiming_normal(m.weight)
+        m.bias.data.fill_(0)
+
+def do_disable(m):
+    classname = m.__class__.__name__
+    if classname.find('Dropout') != -1:
+        m.training = False
+
 
 def datestr():
     now = time.gmtime()
@@ -46,9 +55,10 @@ def datestr():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batchSz', type=int, default=12)
+    parser.add_argument('--batchSz', type=int, default=10)
     parser.add_argument('--nll', type=bool, default=True)
     parser.add_argument('--PReLU', type=bool, default=True)
+    parser.add_argument('--ngpu', type=int, default=1)
     parser.add_argument('--nEpochs', type=int, default=300)
     parser.add_argument('--no-cuda', action='store_true')
     parser.add_argument('--save')
@@ -67,13 +77,15 @@ def main():
         torch.cuda.manual_seed(args.seed)
 
     print("build vnet")
-    net = vnet.VNet(args.batchSz, inplace=False, nll=nll)
-    net.apply(weights_init)
+    net = vnet.VNet(elu=False, nll=nll)
+    batch_size = args.batchSz
+    if args.ngpu > 1:
+        gpu_ids = range(args.ngpu)
+        net = nn.parallel.DataParallel(net, device_ids=gpu_ids)
+        batch_size = args.ngpu*args.batchSz
 
-    if args.PReLU:
-        weight_decay = 1e-3
-    else:
-        weight_decay = 1e-4
+    net.apply(weights_init)
+    weight_decay = 1e-4
 
     if nll:
         train = train_nll
@@ -111,13 +123,13 @@ def main():
     trainSet = dset.LUNA16(root='luna16', images="luna16_ct_normalized", targets=lung_masks,
                            train=True, transform=trainTransform, allow_empty=False,
                            class_balance=class_balance, split=[2,2,2], seed=args.seed)
-    trainLoader = DataLoader(trainSet, batch_size=args.batchSz, shuffle=True, **kwargs)
+    trainLoader = DataLoader(trainSet, batch_size=batch_size, shuffle=True, **kwargs)
     print("loading test set")
     testLoader = DataLoader(
         dset.LUNA16(root='luna16', images="luna16_ct_normalized", targets=lung_masks,
                     train=False, transform=testTransform, allow_empty=False, seed=args.seed,
                     split=[2, 2, 2]),
-        batch_size=args.batchSz, shuffle=False, **kwargs)
+        batch_size=batch_size, shuffle=False, **kwargs)
 
     target_weight = trainSet.target_weight()
     print(target_weight)
@@ -130,7 +142,7 @@ def main():
         optimizer = optim.SGD(net.parameters(), lr=1e-1,
                               momentum=0.99, weight_decay=weight_decay)
     elif args.opt == 'adam':
-        optimizer = optim.Adam(net.parameters(),  weight_decay=weight_decay)
+        optimizer = optim.Adam(net.parameters(), weight_decay=weight_decay)
     elif args.opt == 'rmsprop':
         optimizer = optim.RMSprop(net.parameters(), weight_decay=weight_decay)
 
@@ -177,7 +189,10 @@ def train_nll(args, epoch, net, trainLoader, optimizer, trainF, weights):
 
 
 def test_nll(args, epoch, net, testLoader, optimizer, testF, weights):
-    net.eval()
+    # we don't want to actually call net.eval() as we need
+    # to maintain the running stats to get good results at
+    # test time
+    net.apply(do_disable)
     test_loss = 0
     incorrect = 0
     numel = 0
