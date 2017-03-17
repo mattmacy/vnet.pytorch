@@ -39,53 +39,83 @@ def weights_init(m):
     classname = m.__class__.__name__
     if classname.find('Conv3d') != -1:
         nn.init.kaiming_normal(m.weight)
+        m.bias.data.zero_()
     elif classname.find('BatchNorm') != -1:
-        #nn.init.kaiming_normal(m.weight)
-        m.bias.data.fill_(0)
-
-def do_disable(m):
-    classname = m.__class__.__name__
-    if classname.find('Dropout') != -1:
-        m.training = False
+        m.weight.data.normal_(0, 1)
+        m.bias.data.zero_()
 
 
 def datestr():
     now = time.gmtime()
     return '{}{:02}{:02}_{:02}{:02}'.format(now.tm_year, now.tm_mon, now.tm_mday, now.tm_hour, now.tm_min)
 
+
+def save_checkpoint(state, is_best, path, prefix, filename='checkpoint.pth.tar'):
+    prefix_save = os.path.join(path, prefix)
+    name = prefix_save+filename
+    torch.save(state, name)
+    if is_best:
+        shutil.copyfile(name, prefix_save+'model_best.pth.tar')
+
+#def print_param(m):
+#    classname = m.__class__.__name__
+#    print("{}: {}".format(m, m.children()))
+
+
 def main():
+    global gpuid
     parser = argparse.ArgumentParser()
     parser.add_argument('--batchSz', type=int, default=10)
     parser.add_argument('--nll', type=bool, default=True)
-    parser.add_argument('--PReLU', type=bool, default=True)
     parser.add_argument('--ngpu', type=int, default=1)
+    parser.add_argument('--gpuid', type=int, default=0)
     parser.add_argument('--nEpochs', type=int, default=300)
+    parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
+                        help='manual epoch number (useful on restarts)')
+    parser.add_argument('--resume', default='', type=str, metavar='PATH',
+                        help='path to latest checkpoint (default: none)')
+    parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
+                        help='evaluate model on validation set')
+    parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float,
+                        metavar='W', help='weight decay (default: 1e-4)')
     parser.add_argument('--no-cuda', action='store_true')
     parser.add_argument('--save')
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--opt', type=str, default='sgd',
                         choices=('sgd', 'adam', 'rmsprop'))
     args = parser.parse_args()
-
+    best_prec1 = 100.
     args.cuda = not args.no_cuda and torch.cuda.is_available()
     args.save = args.save or 'work/vnet.base.{}'.format(datestr())
     nll = args.nll
+    weight_decay = args.weight_decay
     setproctitle.setproctitle(args.save)
 
     torch.manual_seed(args.seed)
     if args.cuda:
+        gpuid = args.gpuid
         torch.cuda.manual_seed(args.seed)
 
     print("build vnet")
-    net = vnet.VNet(elu=False, nll=nll)
-    batch_size = args.batchSz
+    model = vnet.VNet(elu=False, nll=nll)
+    batch_size = args.ngpu*args.batchSz
     if args.ngpu > 1:
         gpu_ids = range(args.ngpu)
-        net = nn.parallel.DataParallel(net, device_ids=gpu_ids)
-        batch_size = args.ngpu*args.batchSz
+        model = nn.parallel.DataParallel(model, device_ids=gpu_ids)
 
-    net.apply(weights_init)
-    weight_decay = 1e-4
+    if args.resume:
+        if os.path.isfile(args.resume):
+            print("=> loading checkpoint '{}'".format(args.resume))
+            checkpoint = torch.load(args.resume)
+            args.start_epoch = checkpoint['epoch']
+            best_prec1 = checkpoint['best_prec1']
+            model.load_state_dict(checkpoint['state_dict'])
+            print("=> loaded checkpoint '{}' (epoch {})"
+                  .format(args.evaluate, checkpoint['epoch']))
+        else:
+            print("=> no checkpoint found at '{}'".format(args.resume))
+    else:
+        model.apply(weights_init)
 
     if nll:
         train = train_nll
@@ -97,16 +127,18 @@ def main():
         class_balance = False
 
     print('  + Number of params: {}'.format(
-        sum([p.data.nelement() for p in net.parameters()])))
+        sum([p.data.nelement() for p in model.parameters()])))
     if args.cuda:
-        net = net.cuda()
+        model = model.cuda(gpuid)
 
     if os.path.exists(args.save):
         shutil.rmtree(args.save)
     os.makedirs(args.save, exist_ok=True)
 
-    normMu = [-642.794]
-    normSigma = [459.512]
+    # LUNA16 values rescaled to 2.5mm^3 voxel
+    # and 160x128x160
+    normMu = [.25515]
+    normSigma = [.32822]
     normTransform = transforms.Normalize(normMu, normSigma)
 
     trainTransform = transforms.Compose([
@@ -122,7 +154,7 @@ def main():
     print("loading training set")
     trainSet = dset.LUNA16(root='luna16', images="luna16_ct_normalized", targets=lung_masks,
                            train=True, transform=trainTransform, allow_empty=False,
-                           class_balance=class_balance, split=[2,2,2], seed=args.seed)
+                           class_balance=class_balance, split=[2, 2, 2], seed=args.seed)
     trainLoader = DataLoader(trainSet, batch_size=batch_size, shuffle=True, **kwargs)
     print("loading test set")
     testLoader = DataLoader(
@@ -136,40 +168,48 @@ def main():
     bg_weight = 1.0 - target_weight
     class_weights = torch.FloatTensor([bg_weight, target_weight])
     if args.cuda:
-        class_weights = class_weights.cuda()
+        class_weights = class_weights.cuda(gpuid)
 
     if args.opt == 'sgd':
-        optimizer = optim.SGD(net.parameters(), lr=1e-1,
+        optimizer = optim.SGD(model.parameters(), lr=1e-1,
                               momentum=0.99, weight_decay=weight_decay)
     elif args.opt == 'adam':
-        optimizer = optim.Adam(net.parameters(), weight_decay=weight_decay)
+        optimizer = optim.Adam(model.parameters(), weight_decay=weight_decay)
     elif args.opt == 'rmsprop':
-        optimizer = optim.RMSprop(net.parameters(), weight_decay=weight_decay)
+        optimizer = optim.RMSprop(model.parameters(), weight_decay=weight_decay)
 
     trainF = open(os.path.join(args.save, 'train.csv'), 'w')
     testF = open(os.path.join(args.save, 'test.csv'), 'w')
-
+    err_best = 100.
     for epoch in range(1, args.nEpochs + 1):
         adjust_opt(args.opt, optimizer, epoch)
-        train(args, epoch, net, trainLoader, optimizer, trainF, class_weights)
-        test(args, epoch, net, testLoader, optimizer, testF, class_weights)
-        torch.save(net, os.path.join(args.save, 'latest.pth'))
-        os.system('./plot.py {} &'.format(args.save))
+        train(args, epoch, model, trainLoader, optimizer, trainF, class_weights)
+        err = test(args, epoch, model, testLoader, optimizer, testF, class_weights)
+        torch.save(model, os.path.join(args.save, 'vnet_checkpoint.pth'))
+        is_best = False
+        if err < best_prec1:
+            is_best = True
+            best_prec1 = err
+        save_checkpoint({'epoch': epoch,
+                         'state_dict': model.state_dict(),
+                         'best_prec1': best_prec1},
+                        is_best, args.save, "vnet")
+        os.system('./plot.py {} {} &'.format(len(trainLoader), args.save))
 
     trainF.close()
     testF.close()
 
 
-def train_nll(args, epoch, net, trainLoader, optimizer, trainF, weights):
-    net.train()
+def train_nll(args, epoch, model, trainLoader, optimizer, trainF, weights):
+    model.train()
     nProcessed = 0
     nTrain = len(trainLoader.dataset)
     for batch_idx, (data, target) in enumerate(trainLoader):
         if args.cuda:
-            data, target = data.cuda(), target.cuda()
+            data, target = data.cuda(gpuid), target.cuda(gpuid)
         data, target = Variable(data), Variable(target)
         optimizer.zero_grad()
-        output = net(data)
+        output = model(data)
         target = target.view(target.numel())
         loss = F.nll_loss(output, target, weight=weights)
         # make_graph.save('/tmp/t.dot', loss.creator); assert(False)
@@ -188,21 +228,26 @@ def train_nll(args, epoch, net, trainLoader, optimizer, trainF, weights):
         trainF.flush()
 
 
-def test_nll(args, epoch, net, testLoader, optimizer, testF, weights):
-    # we don't want to actually call net.eval() as we need
+def test_nll(args, epoch, model, testLoader, optimizer, testF, weights):
+    # we don't want to actually call model.eval() as we need
     # to maintain the running stats to get good results at
     # test time
-    net.apply(do_disable)
+    def _do_disable(m):
+        classname = m.__class__.__name__
+        if classname.find('Dropout') != -1:
+            m.training = False
+    model.apply(_do_disable)
+    #model.eval()
     test_loss = 0
     incorrect = 0
     numel = 0
     for data, target in testLoader:
         if args.cuda:
-            data, target = data.cuda(), target.cuda()
-        data, target = Variable(data, volatile=True), Variable(target)
+            data, target = data.cuda(gpuid), target.cuda(gpuid)
+        data, target = Variable(data, volatile=True), Variable(target, volatile=True)
         target = target.view(target.numel())
         numel += target.numel()
-        output = net(data)
+        output = model(data)
         test_loss += F.nll_loss(output, target, weight=weights).data[0]
         pred = output.data.max(1)[1]  # get the index of the max log-probability
         incorrect += pred.ne(target.data).cpu().sum()
@@ -214,18 +259,19 @@ def test_nll(args, epoch, net, testLoader, optimizer, testF, weights):
 
     testF.write('{},{},{}\n'.format(epoch, test_loss, err))
     testF.flush()
+    return err
 
 
-def train_dice(args, epoch, net, trainLoader, optimizer, trainF, weights):
-    net.train()
+def train_dice(args, epoch, model, trainLoader, optimizer, trainF, weights):
+    model.train()
     nProcessed = 0
     nTrain = len(trainLoader.dataset)
     for batch_idx, (data, target) in enumerate(trainLoader):
         if args.cuda:
-            data, target = data.cuda(), target.cuda()
+            data, target = data.cuda(gpuid), target.cuda(gpuid)
         data, target = Variable(data), Variable(target)
         optimizer.zero_grad()
-        output = net(data)
+        output = model(data)
         loss = bioloss.dice_loss(output, target)
         # make_graph.save('/tmp/t.dot', loss.creator); assert(False)
         loss.backward()
@@ -241,15 +287,20 @@ def train_dice(args, epoch, net, trainLoader, optimizer, trainF, weights):
         trainF.flush()
 
 
-def test_dice(args, epoch, net, testLoader, optimizer, testF, weights):
-    net.eval()
+def test_dice(args, epoch, model, testLoader, optimizer, testF, weights):
+    def _do_disable(m):
+        classname = m.__class__.__name__
+        if classname.find('Dropout') != -1:
+            m.training = False
+    model.apply(_do_disable)
+    #model.eval()
     test_loss = 0
     incorrect = 0
     for data, target in testLoader:
         if args.cuda:
-            data, target = data.cuda(), target.cuda()
+            data, target = data.cuda(gpuid), target.cuda(gpuid)
         data, target = Variable(data, volatile=True), Variable(target)
-        output = net(data)
+        output = model(data)
         loss = bioloss.dice_loss(output, target).data[0]
         test_loss += loss
         incorrect += (1. - loss)
@@ -262,6 +313,7 @@ def test_dice(args, epoch, net, testLoader, optimizer, testF, weights):
 
     testF.write('{},{},{}\n'.format(epoch, test_loss, err))
     testF.flush()
+    return err
 
 
 def adjust_opt(optAlg, optimizer, epoch):
