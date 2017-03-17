@@ -11,6 +11,7 @@ plt.style.use('bmh')
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('nBatches', type=int)
     parser.add_argument('expDir', type=str)
     args = parser.parse_args()
 
@@ -19,8 +20,7 @@ def main():
     testP = os.path.join(args.expDir, 'test.csv')
     testData = np.loadtxt(testP, delimiter=',').reshape(-1, 3)
 
-    N = 203  # number of minibatches 
-
+    N = args.nBatches
     trainI, trainLoss, trainErr = np.split(trainData, [1,2], axis=1)
     trainI, trainLoss, trainErr = [x.ravel() for x in
                                    (trainI, trainLoss, trainErr)]
