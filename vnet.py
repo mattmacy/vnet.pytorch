@@ -6,18 +6,24 @@ import torch.nn.functional as F
 def passthrough(x, **kwargs):
     return x
 
+
 class LUConv(nn.Module):
     def __init__(self, nchan, elu):
         super(LUConv, self).__init__()
         if elu:
-            self.prelu = nn.ELU(inplace=True)
+            self.prelu1 = nn.ELU(inplace=True)
+            self.prelu2 = nn.ELU(inplace=True)
         else:
-            self.prelu = nn.PReLU(nchan)
-        self.conv = nn.Conv3d(nchan, nchan, kernel_size=5, padding=2)
+            self.prelu1 = nn.PReLU(nchan)
+            self.prelu2 = nn.PReLU(nchan)
+        self.conv1 = nn.Conv3d(nchan, nchan, kernel_size=3, padding=1)
         self.bn1 = nn.BatchNorm3d(nchan)
+        self.conv2 = nn.Conv3d(nchan, nchan, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm3d(nchan)
 
     def forward(self, x):
-        out = self.prelu(self.bn1(self.conv(x)))
+        out = self.prelu1(self.bn1(self.conv1(x)))
+        out = self.prelu2(self.bn2(self.conv2(out)))
         return out
 
 
@@ -63,7 +69,7 @@ class DownTransition(nn.Module):
             self.relu1 = nn.PReLU(outChans)
             self.relu2 = nn.PReLU(outChans)
         if dropout:
-             self.do1 = nn.Dropout3d()
+            self.do1 = nn.Dropout3d()
         self.ops = _make_nConv(outChans, nConvs, elu)
 
     def forward(self, x):
@@ -116,7 +122,6 @@ class OutputTransition(nn.Module):
         else:
             self.softmax = F.softmax
 
-
     def forward(self, x):
         # convolve 32 down to 2 channels
         out = self.relu1(self.bn1(self.conv1(x)))
@@ -146,8 +151,6 @@ class VNet(nn.Module):
         self.up_tr64 = UpTransition(128, 64, 1, elu)
         self.up_tr32 = UpTransition(64, 32, 1, elu)
         self.out_tr = OutputTransition(32, elu, nll)
-
-
 
     # The network topology as described in the diagram
     # in the VNet paper
