@@ -237,7 +237,6 @@ def test_nll(args, epoch, model, testLoader, optimizer, testF, weights):
         if classname.find('Dropout') != -1:
             m.training = False
     model.apply(_do_disable)
-    #model.eval()
     test_loss = 0
     incorrect = 0
     numel = 0
