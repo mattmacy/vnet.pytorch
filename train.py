@@ -40,10 +40,6 @@ def weights_init(m):
     if classname.find('Conv3d') != -1:
         nn.init.kaiming_normal(m.weight)
         m.bias.data.zero_()
-    elif classname.find('BatchNorm') != -1:
-        m.weight.data.normal_(0, 1)
-        m.bias.data.zero_()
-
 
 def datestr():
     now = time.gmtime()
@@ -63,12 +59,10 @@ def save_checkpoint(state, is_best, path, prefix, filename='checkpoint.pth.tar')
 
 
 def main():
-    global gpuid
     parser = argparse.ArgumentParser()
     parser.add_argument('--batchSz', type=int, default=10)
     parser.add_argument('--nll', type=bool, default=True)
     parser.add_argument('--ngpu', type=int, default=1)
-    parser.add_argument('--gpuid', type=int, default=0)
     parser.add_argument('--nEpochs', type=int, default=300)
     parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                         help='manual epoch number (useful on restarts)')
@@ -93,7 +87,6 @@ def main():
 
     torch.manual_seed(args.seed)
     if args.cuda:
-        gpuid = args.gpuid
         torch.cuda.manual_seed(args.seed)
 
     print("build vnet")
@@ -129,16 +122,16 @@ def main():
     print('  + Number of params: {}'.format(
         sum([p.data.nelement() for p in model.parameters()])))
     if args.cuda:
-        model = model.cuda(gpuid)
+        model = model.cuda()
 
     if os.path.exists(args.save):
         shutil.rmtree(args.save)
     os.makedirs(args.save, exist_ok=True)
 
-    # LUNA16 values rescaled to 2.5mm^3 voxel
-    # and 160x128x160
-    normMu = [.25515]
-    normSigma = [.32822]
+    # LUNA16 dataset isotropically scaled to 2.5mm^3
+    # and then truncated or zero-padded to 160x128x160
+    normMu = [-642.794]
+    normSigma = [459.512]
     normTransform = transforms.Normalize(normMu, normSigma)
 
     trainTransform = transforms.Compose([
@@ -168,7 +161,7 @@ def main():
     bg_weight = 1.0 - target_weight
     class_weights = torch.FloatTensor([bg_weight, target_weight])
     if args.cuda:
-        class_weights = class_weights.cuda(gpuid)
+        class_weights = class_weights.cuda()
 
     if args.opt == 'sgd':
         optimizer = optim.SGD(model.parameters(), lr=1e-1,
@@ -206,7 +199,7 @@ def train_nll(args, epoch, model, trainLoader, optimizer, trainF, weights):
     nTrain = len(trainLoader.dataset)
     for batch_idx, (data, target) in enumerate(trainLoader):
         if args.cuda:
-            data, target = data.cuda(gpuid), target.cuda(gpuid)
+            data, target = data.cuda(), target.cuda()
         data, target = Variable(data), Variable(target)
         optimizer.zero_grad()
         output = model(data)
@@ -229,21 +222,14 @@ def train_nll(args, epoch, model, trainLoader, optimizer, trainF, weights):
 
 
 def test_nll(args, epoch, model, testLoader, optimizer, testF, weights):
-    # we don't want to actually call model.eval() as we need
-    # to maintain the running stats to get good results at
-    # test time
-    def _do_disable(m):
-        classname = m.__class__.__name__
-        if classname.find('Dropout') != -1:
-            m.training = False
-    model.apply(_do_disable)
+    model.eval()
     test_loss = 0
     incorrect = 0
     numel = 0
     for data, target in testLoader:
         if args.cuda:
-            data, target = data.cuda(gpuid), target.cuda(gpuid)
-        data, target = Variable(data, volatile=True), Variable(target, volatile=True)
+            data, target = data.cuda(), target.cuda()
+        data, target = Variable(data, volatile=True), Variable(target)
         target = target.view(target.numel())
         numel += target.numel()
         output = model(data)
@@ -267,7 +253,7 @@ def train_dice(args, epoch, model, trainLoader, optimizer, trainF, weights):
     nTrain = len(trainLoader.dataset)
     for batch_idx, (data, target) in enumerate(trainLoader):
         if args.cuda:
-            data, target = data.cuda(gpuid), target.cuda(gpuid)
+            data, target = data.cuda(), target.cuda()
         data, target = Variable(data), Variable(target)
         optimizer.zero_grad()
         output = model(data)
@@ -287,17 +273,12 @@ def train_dice(args, epoch, model, trainLoader, optimizer, trainF, weights):
 
 
 def test_dice(args, epoch, model, testLoader, optimizer, testF, weights):
-    def _do_disable(m):
-        classname = m.__class__.__name__
-        if classname.find('Dropout') != -1:
-            m.training = False
-    model.apply(_do_disable)
-    #model.eval()
+    model.eval()
     test_loss = 0
     incorrect = 0
     for data, target in testLoader:
         if args.cuda:
-            data, target = data.cuda(gpuid), target.cuda(gpuid)
+            data, target = data.cuda(), target.cuda()
         data, target = Variable(data, volatile=True), Variable(target)
         output = model(data)
         loss = bioloss.dice_loss(output, target).data[0]
