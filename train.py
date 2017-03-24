@@ -5,6 +5,7 @@ import time
 import argparse
 import torch
 
+import numpy as np
 import torch.nn as nn
 import torch.nn.init as init
 import torch.optim as optim
@@ -19,6 +20,7 @@ from torch.utils.data import DataLoader
 import torchbiomed.datasets as dset
 import torchbiomed.transforms as biotransforms
 import torchbiomed.loss as bioloss
+import torchbiomed.utils as utils
 
 import os
 import sys
@@ -30,10 +32,22 @@ import setproctitle
 
 import vnet
 import make_graph
+from functools import reduce
+import operator
+
+
+#nodule_masks = "normalized_mask_5_0"
+#lung_masks = "normalized_seg_lungs_5_0"
+#ct_images = "normalized_CT_5_0"
+#target_split = [1, 1, 1]
+#ct_targets = nodule_masks
+
 
 nodule_masks = "luna16_nodule_masks"
 lung_masks = "luna16_seg_lungs"
-
+ct_images = "luna16_ct_normalized"
+ct_targets = lung_masks
+target_split = [2, 2, 2]
 
 def weights_init(m):
     classname = m.__class__.__name__
@@ -48,20 +62,47 @@ def datestr():
 
 def save_checkpoint(state, is_best, path, prefix, filename='checkpoint.pth.tar'):
     prefix_save = os.path.join(path, prefix)
-    name = prefix_save+filename
+    name = prefix_save + '_' + filename
     torch.save(state, name)
     if is_best:
-        shutil.copyfile(name, prefix_save+'model_best.pth.tar')
-
-#def print_param(m):
-#    classname = m.__class__.__name__
-#    print("{}: {}".format(m, m.children()))
+        shutil.copyfile(name, prefix_save + '_model_best.pth.tar')
 
 
+def inference(args, loader, model, transforms):
+    src = args.inference
+    dst = args.save
+
+    model.eval()
+    nvols = reduce(operator.mul, target_split, 1)
+    # assume single GPU / batch size 1
+    for data in loader:
+        data, series, origin, spacing = data[0]
+        shape = data.size()
+        # convert names to batch tensor
+        if args.cuda:
+            data.pin_memory()
+            data = data.cuda()
+        data = Variable(data, volatile=True)
+        output = model(data)
+        _, output = output.max(1)
+        output = output.view(shape)
+        output = output.cpu()
+        # merge subvolumes and save
+        results = output.chunk(nvols)
+        results = map(lambda var : torch.squeeze(var.data).numpy().astype(np.int16), results)
+        volume = utils.merge_image([*results], target_split)
+        print("save {}".format(series))
+        utils.save_updated_image(volume, os.path.join(dst, series + ".mhd"), origin, spacing)
+
+# performing post-train inference:
+# train.py --resume <model checkpoint> --i <input directory (*.mhd)> --save <output directory>
+
+def noop(x):
+    return x
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--batchSz', type=int, default=10)
-    parser.add_argument('--nll', type=bool, default=True)
+    parser.add_argument('--dice', action='store_true')
     parser.add_argument('--ngpu', type=int, default=1)
     parser.add_argument('--nEpochs', type=int, default=300)
     parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
@@ -70,18 +111,25 @@ def main():
                         help='path to latest checkpoint (default: none)')
     parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                         help='evaluate model on validation set')
-    parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float,
-                        metavar='W', help='weight decay (default: 1e-4)')
+    parser.add_argument('-i', '--inference', default='', type=str, metavar='PATH',
+                        help='run inference on data set and save results')
+
+    # 1e-8 works well for lung masks but seems to prevent
+    # rapid learning for nodule masks
+    parser.add_argument('--weight-decay', '--wd', default=1e-8, type=float,
+                        metavar='W', help='weight decay (default: 1e-8)')
     parser.add_argument('--no-cuda', action='store_true')
     parser.add_argument('--save')
     parser.add_argument('--seed', type=int, default=1)
-    parser.add_argument('--opt', type=str, default='sgd',
+    parser.add_argument('--opt', type=str, default='adam',
                         choices=('sgd', 'adam', 'rmsprop'))
     args = parser.parse_args()
     best_prec1 = 100.
     args.cuda = not args.no_cuda and torch.cuda.is_available()
     args.save = args.save or 'work/vnet.base.{}'.format(datestr())
-    nll = args.nll
+    nll = True
+    if args.dice:
+        nll = False
     weight_decay = args.weight_decay
     setproctitle.setproctitle(args.save)
 
@@ -92,9 +140,8 @@ def main():
     print("build vnet")
     model = vnet.VNet(elu=False, nll=nll)
     batch_size = args.ngpu*args.batchSz
-    if args.ngpu > 1:
-        gpu_ids = range(args.ngpu)
-        model = nn.parallel.DataParallel(model, device_ids=gpu_ids)
+    gpu_ids = range(args.ngpu)
+    model = nn.parallel.DataParallel(model, device_ids=gpu_ids)
 
     if args.resume:
         if os.path.isfile(args.resume):
@@ -142,24 +189,41 @@ def main():
         transforms.ToTensor(),
         normTransform
     ])
+    if ct_targets == nodule_masks:
+        masks = lung_masks
+    else:
+        masks = None
+
+    if args.inference is not None:
+        if not args.resume:
+            print("args.resume must be set to do inference")
+            exit(1)
+        kwargs = {'num_workers': 1} if args.cuda else {}
+        src = args.inference
+        dst = args.save
+        inference_batch_size = args.ngpu
+        dataset = dset.LUNA16(root='luna16', images=ct_images, transform=testTransform, split=target_split, mode="infer")
+        loader = DataLoader(dataset, batch_size=inference_batch_size, shuffle=False, collate_fn=noop, **kwargs)
+        inference(args, loader, model, trainTransform)
+        return
 
     kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
     print("loading training set")
-    trainSet = dset.LUNA16(root='luna16', images="luna16_ct_normalized", targets=lung_masks,
-                           train=True, transform=trainTransform, allow_empty=False,
-                           class_balance=class_balance, split=[2, 2, 2], seed=args.seed)
+    trainSet = dset.LUNA16(root='luna16', images=ct_images, targets=ct_targets,
+                           mode="train", transform=trainTransform, 
+                           class_balance=class_balance, split=target_split, seed=args.seed, masks=masks)
     trainLoader = DataLoader(trainSet, batch_size=batch_size, shuffle=True, **kwargs)
     print("loading test set")
     testLoader = DataLoader(
-        dset.LUNA16(root='luna16', images="luna16_ct_normalized", targets=lung_masks,
-                    train=False, transform=testTransform, allow_empty=False, seed=args.seed,
-                    split=[2, 2, 2]),
+        dset.LUNA16(root='luna16', images=ct_images, targets=ct_targets,
+                    mode="test", transform=testTransform, seed=args.seed, masks=masks, split=target_split),
         batch_size=batch_size, shuffle=False, **kwargs)
 
-    target_weight = trainSet.target_weight()
-    print(target_weight)
-    bg_weight = 1.0 - target_weight
-    class_weights = torch.FloatTensor([bg_weight, target_weight])
+    target_mean = trainSet.target_weight()
+    bg_weight = target_mean / (1. + target_mean)
+    fg_weight = 1. - bg_weight
+    print(bg_weight)
+    class_weights = torch.FloatTensor([bg_weight, fg_weight])
     if args.cuda:
         class_weights = class_weights.cuda()
 
@@ -178,7 +242,6 @@ def main():
         adjust_opt(args.opt, optimizer, epoch)
         train(args, epoch, model, trainLoader, optimizer, trainF, class_weights)
         err = test(args, epoch, model, testLoader, optimizer, testF, class_weights)
-        torch.save(model, os.path.join(args.save, 'vnet_checkpoint.pth'))
         is_best = False
         if err < best_prec1:
             is_best = True
@@ -205,6 +268,7 @@ def train_nll(args, epoch, model, trainLoader, optimizer, trainF, weights):
         output = model(data)
         target = target.view(target.numel())
         loss = F.nll_loss(output, target, weight=weights)
+        dice_loss = bioloss.dice_error(output, target)
         # make_graph.save('/tmp/t.dot', loss.creator); assert(False)
         loss.backward()
         optimizer.step()
@@ -213,9 +277,9 @@ def train_nll(args, epoch, model, trainLoader, optimizer, trainF, weights):
         incorrect = pred.ne(target.data).cpu().sum()
         err = 100.*incorrect/target.numel()
         partialEpoch = epoch + batch_idx / len(trainLoader) - 1
-        print('Train Epoch: {:.2f} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tError: {:.6f}'.format(
+        print('Train Epoch: {:.2f} [{}/{} ({:.0f}%)]\tLoss: {:.4f}\tError: {:.3f}\t Dice: {:.6f}'.format(
             partialEpoch, nProcessed, nTrain, 100. * batch_idx / len(trainLoader),
-            loss.data[0], err))
+            loss.data[0], err, dice_loss))
 
         trainF.write('{},{},{}\n'.format(partialEpoch, loss.data[0], err))
         trainF.flush()
@@ -224,6 +288,7 @@ def train_nll(args, epoch, model, trainLoader, optimizer, trainF, weights):
 def test_nll(args, epoch, model, testLoader, optimizer, testF, weights):
     model.eval()
     test_loss = 0
+    dice_loss = 0
     incorrect = 0
     numel = 0
     for data, target in testLoader:
@@ -234,13 +299,15 @@ def test_nll(args, epoch, model, testLoader, optimizer, testF, weights):
         numel += target.numel()
         output = model(data)
         test_loss += F.nll_loss(output, target, weight=weights).data[0]
+        dice_loss += bioloss.dice_error(output, target)
         pred = output.data.max(1)[1]  # get the index of the max log-probability
         incorrect += pred.ne(target.data).cpu().sum()
 
     test_loss /= len(testLoader)  # loss function already averages over batch size
+    dice_loss /= len(testLoader)
     err = 100.*incorrect/numel
-    print('\nTest set: Average loss: {:.4f}, Error: {}/{} ({:.0f}%)\n'.format(
-        test_loss, incorrect, numel, err))
+    print('\nTest set: Average loss: {:.4f}, Error: {}/{} ({:.3f}%) Dice: {:.6f}\n'.format(
+        test_loss, incorrect, numel, err, dice_loss))
 
     testF.write('{},{},{}\n'.format(epoch, test_loss, err))
     testF.flush()
