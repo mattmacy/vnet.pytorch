@@ -43,10 +43,10 @@ import operator
 #ct_targets = nodule_masks
 
 
-nodule_masks = "luna16_nodule_masks"
-lung_masks = "luna16_seg_lungs"
+nodule_masks = "normalized_brightened_CT_2_5"
+lung_masks = "inferred_seg_lungs_2_5"
 ct_images = "luna16_ct_normalized"
-ct_targets = lung_masks
+ct_targets = nodule_masks
 target_split = [2, 2, 2]
 
 def weights_init(m):
@@ -99,6 +99,7 @@ def inference(args, loader, model, transforms):
 
 def noop(x):
     return x
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--batchSz', type=int, default=10)
@@ -194,7 +195,7 @@ def main():
     else:
         masks = None
 
-    if args.inference is not None:
+    if args.inference != '':
         if not args.resume:
             print("args.resume must be set to do inference")
             exit(1)
@@ -221,7 +222,7 @@ def main():
                     mode="test", transform=testTransform, seed=args.seed, masks=masks, split=target_split),
         batch_size=batch_size, shuffle=False, **kwargs)
 
-    target_mean = trainSet.target_weight()
+    target_mean = trainSet.target_mean()
     bg_weight = target_mean / (1. + target_mean)
     fg_weight = 1. - bg_weight
     print(bg_weight)
