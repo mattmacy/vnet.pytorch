@@ -202,7 +202,9 @@ def main():
         src = args.inference
         dst = args.save
         inference_batch_size = args.ngpu
-        dataset = dset.LUNA16(root='luna16', images=ct_images, transform=testTransform, split=target_split, mode="infer")
+        root = os.path.dirname(src)
+        images = os.path.basename(src)
+        dataset = dset.LUNA16(root=root, images=images, transform=testTransform, split=target_split, mode="infer")
         loader = DataLoader(dataset, batch_size=inference_batch_size, shuffle=False, collate_fn=noop, **kwargs)
         inference(args, loader, model, trainTransform)
         return
